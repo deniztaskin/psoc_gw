@@ -41,12 +41,10 @@ and pushes data to the cloud. Thus, we will be able to follow the crowd density 
 
 #define APP_AWS_CONNACK_TIMEOUT             (3 * APPLICATION_DELAY_IN_MILLISECONDS)
 #define APP_AWS_PUBLISH_ACK_TIMEOUT         (2 * APPLICATION_DELAY_IN_MILLISECONDS)
-
 #define SCANNER_AWS_INITIALIZE_TIMEOUT       (30 * APPLICATION_DELAY_IN_MILLISECONDS)
 #define SCANNER_PUBLISH_TIMEOUT              (5 *  APPLICATION_DELAY_IN_MILLISECONDS)
 #define PUBLISHER_CERTIFICATES_MAX_SIZE            (0x7fffffff)
 #define WICED_TOPIC                                "PSOC_GW"
-
 #define APP_PUBLISH_RETRY_COUNT                    (5)
 
 /******************************************************
@@ -55,9 +53,12 @@ and pushes data to the cloud. Thus, we will be able to follow the crowd density 
 
 static wiced_semaphore_t  end_of_scan_semaphore;
 static wiced_semaphore_t  event_semaphore;
-
+extern const wiced_bt_cfg_settings_t wiced_bt_cfg_settings;
+extern const wiced_bt_cfg_buf_pool_t wiced_bt_cfg_buf_pools[];
 static wiced_bool_t             is_connected = WICED_FALSE;
 static wiced_aws_qos_level_t    qos = WICED_AWS_QOS_ATMOST_ONCE;
+int scan_result; //Number of devices
+char msg[33]; //Message to publish
 
 static wiced_aws_thing_security_info_t my_publisher_security_creds =
 {
@@ -69,7 +70,7 @@ static wiced_aws_thing_security_info_t my_publisher_security_creds =
 
 static wiced_aws_endpoint_info_t my_publisher_aws_iot_endpoint = {
     .transport           = WICED_AWS_TRANSPORT_MQTT_NATIVE,
-    .uri                 = "a11465fjony244-ats.iot.us-east-2.amazonaws.com",
+    .uri                 = "xxxxxxxxxxxxxxxxxxxx-ats.iot.us-east-2.amazonaws.com",
     .peer_common_name    = NULL,
     .ip_addr             = {0},
     .port                = WICED_AWS_IOT_DEFAULT_MQTT_PORT,
@@ -83,18 +84,33 @@ static wiced_aws_thing_info_t my_publisher_aws_config = {
 };
 
 static wiced_aws_handle_t my_app_aws_handle;
-int scan_result;
 
-char msg[33];
 
 /******************************************************
  *               Static Function Definitions
  ******************************************************/
-void ble_scanner_scan_result_cback      ( wiced_bt_ble_scan_results_t *p_scan_result, uint8_t *p_adv_data );
-static wiced_result_t ble_scanner_management_callback    ( wiced_bt_management_evt_t event, wiced_bt_management_evt_data_t *p_event_data );
-extern const wiced_bt_cfg_settings_t wiced_bt_cfg_settings;
-extern const wiced_bt_cfg_buf_pool_t wiced_bt_cfg_buf_pools[];
 
+// Every Ble event activates callback function
+static wiced_result_t ble_scanner_management_callback( wiced_bt_management_evt_t event, wiced_bt_management_evt_data_t *p_event_data )
+{
+    wiced_result_t result = WICED_BT_SUCCESS;
+    switch( event )
+    {
+        // Bluetooth stack initialized
+        case BTM_ENABLED_EVT:
+            WPRINT_APP_INFO( ("Ble INIT OK, Scanning Begins....") );
+            break;
+
+        case BTM_DISABLED_EVT:
+            break;
+
+        case BTM_BLE_SCAN_STATE_CHANGED_EVT: // Activate the semaphore when the scan is finished.
+             if( p_event_data->ble_scan_state_changed == 2) wiced_rtos_set_semaphore( &end_of_scan_semaphore);
+             break;
+    }
+
+    return result;
+}
 static wiced_result_t do_connect_and_acknowledge(wiced_aws_handle_t handle)
 {
     wiced_result_t ret = WICED_ERROR;
@@ -105,7 +121,7 @@ static wiced_result_t do_connect_and_acknowledge(wiced_aws_handle_t handle)
         return ret;
     }
 
-    /* If Connect passed - wait for CONN-ACK */
+    // If Connect passed - wait for CONN-ACK
     ret = wiced_rtos_get_semaphore(&event_semaphore, APP_AWS_CONNACK_TIMEOUT);
     if (ret != WICED_SUCCESS)
     {
@@ -138,7 +154,7 @@ static wiced_result_t get_aws_credentials_from_resources( void )
         return WICED_SUCCESS;
     }
 
-    /* Get AWS Root CA certificate filename: 'rootca.cer' located @ resources/apps/aws/iot folder */
+    // Get AWS Root CA certificate filename: 'rootca.cer' located @ resources/apps/aws/iot folder
     result = resource_get_readonly_buffer( &resources_apps_DIR_aws_DIR_iot_DIR_rootca_cer, 0, PUBLISHER_CERTIFICATES_MAX_SIZE, &size_out, (const void **) root_ca_certificate);
     if( result != WICED_SUCCESS )
     {
@@ -153,7 +169,7 @@ static wiced_result_t get_aws_credentials_from_resources( void )
 
     my_publisher_aws_iot_endpoint.root_ca_length = size_out;
 
-    /* Get Publisher's Certificate filename: 'client.cer' located @ resources/apps/aws/iot/pubisher folder */
+    // Get Publisher's Certificate filename: 'client.cer' located @ resources/apps/aws/iot/pubisher folder
     result = resource_get_readonly_buffer( &resources_apps_DIR_aws_DIR_iot_DIR_publisher_DIR_client_cer, 0, PUBLISHER_CERTIFICATES_MAX_SIZE, &size_out, (const void **) &security->certificate );
     if( result != WICED_SUCCESS )
     {
@@ -168,7 +184,7 @@ static wiced_result_t get_aws_credentials_from_resources( void )
 
     security->certificate_length = size_out;
 
-    /* Get Publisher's Private Key filename: 'privkey.cer' located @ resources/apps/aws/iot/publisher folder */
+    // Get Publisher's Private Key filename: 'privkey.cer' located @ resources/apps/aws/iot/publisher folder
     result = resource_get_readonly_buffer( &resources_apps_DIR_aws_DIR_iot_DIR_publisher_DIR_privkey_cer, 0, PUBLISHER_CERTIFICATES_MAX_SIZE, &size_out, (const void **) &security->private_key );
     if( result != WICED_SUCCESS )
     {
@@ -192,9 +208,7 @@ _fail_aws_certificate:
     return WICED_ERROR;
 }
 
-/*
- * Call back function to handle AWS events.
- */
+// Call back function to handle AWS events.
 static void my_publisher_aws_callback( wiced_aws_handle_t aws, wiced_aws_event_type_t event, wiced_aws_callback_data_t* data )
 {
     if( !aws || !data || (aws != my_app_aws_handle) )
@@ -249,11 +263,15 @@ static void my_publisher_aws_callback( wiced_aws_handle_t aws, wiced_aws_event_t
     }
 }
 
-void ble_scanner_scan_result_cback  ( wiced_bt_ble_scan_results_t *p_scan_result, uint8_t *p_adv_data );
-
 /******************************************************
  *               Function Definitions
  ******************************************************/
+// Every Ble scan event activates callback function
+void ble_scanner_scan_result_cback( wiced_bt_ble_scan_results_t* p_scan_result, uint8_t* p_adv_data ) {
+    if ( p_scan_result != NULL ) scan_result++; // Every result one point
+
+}
+
 
 void application_start( void )
 {
@@ -267,7 +285,7 @@ void application_start( void )
     wiced_bt_stack_init( ble_scanner_management_callback , &wiced_bt_cfg_settings, wiced_bt_cfg_buf_pools ); // init ble stack
 
 
-    /* Bring up the network interface */
+    // Bring up the network interface
     ret = wiced_network_up( WICED_AWS_DEFAULT_INTERFACE, WICED_USE_EXTERNAL_DHCP_SERVER, NULL );
     if ( ret != WICED_SUCCESS )
     {
@@ -345,16 +363,16 @@ void application_start( void )
             sprintf(msg, "GW_ID:AWS01, Active_Scanned=%d",  scan_result);
             scan_result=0;
 
-            WPRINT_APP_INFO(("[Application/AWS] Publishing... %s\n", msg));
+            WPRINT_APP_INFO(("[Application/AWS] Publishing... %s\n", msg)); // Publish the results to the cloud service
             pub_retries = 0;
             do
             {
-                /* Try publishing until it returns success or exceeds retry-count */
+                // Try publishing until it returns success or exceeds retry-count
                 ret = wiced_aws_publish(aws_connection, WICED_TOPIC, (uint8_t *)msg, strlen( msg ), qos);
                 pub_retries++ ;
             } while ( ( ret != WICED_SUCCESS ) && ( pub_retries < APP_PUBLISH_RETRY_COUNT ) );
 
-            /* if we did exceed retry-count => above function failed to publish anything. Force a disconnect. Set the flags accordingly */
+            // if we did exceed retry-count => above function failed to publish anything. Force a disconnect. Set the flags accordingly
             if (pub_retries >= APP_PUBLISH_RETRY_COUNT)
             {
                 WPRINT_APP_INFO(("[Application/AWS] Publishing failed(ret: %d)\n", ret));
@@ -367,7 +385,7 @@ void application_start( void )
                 continue;
             }
 
-            /* Published - Check if we want an acknowledgment */
+            // Published - Check if we want an acknowledgment
             if (qos > WICED_AWS_QOS_ATMOST_ONCE)
             {
                 ret = wiced_rtos_get_semaphore(&event_semaphore, APP_AWS_PUBLISH_ACK_TIMEOUT);
@@ -400,31 +418,8 @@ void application_start( void )
 
 
 
-static wiced_result_t ble_scanner_management_callback( wiced_bt_management_evt_t event, wiced_bt_management_evt_data_t *p_event_data )
-{
-    wiced_result_t result = WICED_BT_SUCCESS;
-    switch( event )
-    {
-        // Bluetooth stack initialized
-        case BTM_ENABLED_EVT:
-            WPRINT_APP_INFO( ("Ble INIT OK, Scanning Begins....") );
-            break;
-
-        case BTM_DISABLED_EVT:
-            break;
-
-        case BTM_BLE_SCAN_STATE_CHANGED_EVT:
-             if( p_event_data->ble_scan_state_changed == 2) wiced_rtos_set_semaphore( &end_of_scan_semaphore);
-             break;
-    }
-
-    return result;
-}
 
 
 
-void ble_scanner_scan_result_cback( wiced_bt_ble_scan_results_t* p_scan_result, uint8_t* p_adv_data ) {
-    if ( p_scan_result != NULL ) scan_result++;
 
-}
 
