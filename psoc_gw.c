@@ -38,7 +38,6 @@ and pushes data to the cloud. Thus, we will be able to follow the crowd density 
  ******************************************************/
 
 #define APPLICATION_DELAY_IN_MILLISECONDS   (1000)
-
 #define APP_AWS_CONNACK_TIMEOUT             (3 * APPLICATION_DELAY_IN_MILLISECONDS)
 #define APP_AWS_PUBLISH_ACK_TIMEOUT         (2 * APPLICATION_DELAY_IN_MILLISECONDS)
 #define SCANNER_AWS_INITIALIZE_TIMEOUT       (30 * APPLICATION_DELAY_IN_MILLISECONDS)
